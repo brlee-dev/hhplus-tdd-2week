@@ -8,12 +8,12 @@ import com.brlee.lecture.repository.UserLectureRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
-
-// 추가
 
 @Service
 public class LectureService {
@@ -27,20 +27,16 @@ public class LectureService {
     }
 
     /**
-     * 특강 신청 로직 (동시성 이슈 방지)
+     * 특강 신청 로직 (비관적 잠금 적용)
      * @param lectureId - 신청할 특강 ID
      * @param userId - 신청하는 사용자 ID
      * @return 신청 성공 여부
      */
     @Transactional
-    public synchronized boolean applyForLecture(Long lectureId, Long userId) {
-        // 특강 조회
-        Optional<Lecture> lectureOpt = lectureRepository.findById(lectureId);
-        if (lectureOpt.isEmpty()) {
-            throw new IllegalArgumentException("강의를 찾을 수 없습니다.");
-        }
-
-        Lecture lecture = lectureOpt.get();
+    public boolean applyForLecture(Long lectureId, Long userId) {
+        // 비관적 잠금을 적용한 findById 메서드 호출
+        Lecture lecture = lectureRepository.findById(lectureId)
+                .orElseThrow(() -> new IllegalArgumentException("강의를 찾을 수 없습니다."));
 
         // 특강 신청 인원이 30명 이상인 경우 실패
         if (lecture.getCurrentApplicants() >= lecture.getMaxCapacity()) {
@@ -49,14 +45,15 @@ public class LectureService {
 
         // 사용자가 이미 해당 특강을 신청했는지 확인
         if (userLectureRepository.existsByUserIdAndLectureId(userId, lectureId)) {
-            return false;
+            throw new IllegalStateException("이미 신청한 강의입니다.");
         }
 
         // 특강 신청 처리
         lecture.setCurrentApplicants(lecture.getCurrentApplicants() + 1);
+        lectureRepository.save(lecture);  // lecture를 먼저 저장
+
         UserLecture userLecture = new UserLecture(lecture, userId);
         userLectureRepository.save(userLecture);
-        lectureRepository.save(lecture);
 
         return true;
     }
@@ -82,6 +79,7 @@ public class LectureService {
     public List<LectureResponseDto> getAvailableLectures() {
         List<Lecture> lectures = lectureRepository.findAll();
         return lectures.stream()
+                .filter(lecture -> lecture.getCurrentApplicants() < lecture.getMaxCapacity())  // 정원이 차지 않은 강의만 조회
                 .map(LectureResponseDto::new)
                 .collect(Collectors.toList());
     }
